@@ -1,0 +1,14 @@
+{
+  "name": "meteora-dlmm-validation",
+  "private": true,
+  "type": "module",
+  "description": "Node harness that captures SDK swapQuote references to diff the Python library against.",
+  "dependencies": {
+    "@meteora-ag/dlmm": "^1.9.0",
+    "@solana/web3.js": "^1.95.0",
+    "bn.js": "^5.2.1"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0"
+  }
+}

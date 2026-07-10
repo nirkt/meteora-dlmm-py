@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "meteora-dlmm"
+version = "0.1.0"
+description = "Lamport-exact Meteora DLMM swap-quote library, validated against the on-chain program."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "nirkt" }]
+keywords = ["solana", "meteora", "dlmm", "defi", "amm", "quote"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Topic :: Office/Business :: Financial",
+]
+dependencies = []   # pure standard library
+
+[project.urls]
+Homepage = "https://github.com/nirkt/meteora-dlmm-py"
+
+[tool.setuptools]
+packages = ["meteora_dlmm"]
