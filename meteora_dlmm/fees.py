@@ -1,10 +1,5 @@
-"""The DLMM fee: a flat base fee plus a variable fee that grows with volatility.
-
-The variable fee ramps as a swap moves across bins — the volatility accumulator gets
-bigger the farther the swap travels from its starting bin, so later bins can cost more.
-`update_reference` handles the time decay at the start of a swap; `update_va` runs once
-per bin as the swap crosses it.
-"""
+"""DLMM fee math: a flat base fee plus a variable fee that ramps with volatility as a swap
+crosses bins. Fee rates are numerators over FEE_PRECISION and are applied to the input."""
 from dataclasses import dataclass
 from .constants import (
     FEE_PRECISION, MAX_FEE_RATE, BASIS_POINT_MAX, VAR_FEE_DENOMINATOR,
@@ -47,12 +42,10 @@ def variable_fee(bin_step, sp, vp):
 
 
 def total_fee(bin_step, sp, vp):
-    """Fee rate numerator over FEE_PRECISION, capped at MAX_FEE_RATE."""
     return min(base_fee(bin_step, sp) + variable_fee(bin_step, sp, vp), MAX_FEE_RATE)
 
 
 def update_reference(active_id, vp, sp, timestamp):
-    """Time-decay the volatility reference at swap start (mutates `vp`)."""
     elapsed = timestamp - vp.last_update_timestamp
     if elapsed >= sp.filter_period:
         vp.index_reference = active_id
@@ -63,7 +56,6 @@ def update_reference(active_id, vp, sp, timestamp):
 
 
 def update_va(active_id, vp, sp):
-    """Recompute the volatility accumulator for the current bin (mutates `vp`)."""
     delta = abs(vp.index_reference - active_id)
     vp.volatility_accumulator = min(
         vp.volatility_reference + delta * BASIS_POINT_MAX,
@@ -71,7 +63,6 @@ def update_va(active_id, vp, sp):
     )
 
 
-# fee applied on input, matching getExcludedFeeAmount / getIncludedFeeAmount
 def excluded_in(amount, fee_rate):
     return amount - _ceil_div(amount * fee_rate, FEE_PRECISION)
 
