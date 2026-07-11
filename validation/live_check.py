@@ -13,6 +13,11 @@ import json
 import os
 import statistics
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from meteora_dlmm import PoolState, quote
 from meteora_dlmm.decode import decode_lb_pair, decode_bin_arrays
 
@@ -30,9 +35,10 @@ for line in open(PATH):
         continue
     e = json.loads(line)
     lb = base64.b64decode(e["lbPairB64"])
-    sp, vp, active_id, bin_step = decode_lb_pair(lb)
-    bins = decode_bin_arrays([base64.b64decode(b["data"]) for b in e["preBinArraysB64"]], bin_step)
-    pool = PoolState(active_id, bin_step, e["decX"], e["decY"], sp, vp, bins)
+    sp, vp, active_id, bin_step, mint_x, mint_y = decode_lb_pair(lb)
+    bins, loaded = decode_bin_arrays([base64.b64decode(b["data"]) for b in e["preBinArraysB64"]])
+    pool = PoolState(active_id, bin_step, e["decX"], e["decY"], sp, vp, bins, loaded,
+                     mint_x, mint_y)
 
     sfy = e["swapForY"]
     in_dec, out_dec = (e["decX"], e["decY"]) if sfy else (e["decY"], e["decX"])
@@ -47,7 +53,10 @@ for line in open(PATH):
     if spot > 0 and out_ui > 0 and abs(implied / spot - 1) > REJECT_FRAC:
         rejected.append("price_outlier"); continue
 
-    predicted = quote(pool, amt_in, swap_for_y=sfy).amount_out
+    q = quote(pool, amt_in, swap_for_y=sfy, strict=False)
+    if not q.complete:
+        rejected.append("window_truncated"); continue
+    predicted = q.amount_out
     rel = (predicted - executed) / executed * 100 if executed else 0.0
     clean.append((sfy, amt_in, executed, predicted, rel))
 
