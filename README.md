@@ -5,24 +5,34 @@ A Python library that prices Meteora DLMM swaps exactly — down to the lamport.
 Give it a pool's on-chain account bytes and it returns the same `amount_out` the Meteora
 program would: the bin-by-bin walk, the fee that ramps as a swap crosses bins, and the
 on-chain limit orders from Meteora's December 2025 DLMM upgrade. Every number is checked
-against the program's own `swapQuote`, and that check ships in this repo so you can run it.
+against the program's own `swapQuote`, and that check ships in this repo so you can run it
+yourself, with no RPC key.
 
 ```
-in_raw            sdk_out           lib_out          diff   bins
-2000000000000     164139552586      164139552586        0      7
-5000000000000     409532378565      409532378565        0     15
-10000000000000    816406168505      816406168505        0     31
-max |diff| = 0 lamports
+          in_raw          sdk_out          lib_out     diff   bins     fill
+      1000000000         79109650         79109650        0      2     full
+     10000000000        790983110        790983110        0      4     full
+    100000000000       7901542802       7901542802        0     20     full
+   1000000000000      58859103727      58859103727        0   3236      77%
+
+max |diff| = 0 lamports over 4 sizes  ->  PASS: library == on-chain program.
 ```
+
+That last row is a **partial fill** — the swap drains every BinArray in the capture and stops
+at the window edge. The SDK, given the same window, stops in the same place, so `diff = 0` is
+a real match — but it is agreement on a truncated window, not proof that a swap that size
+prices correctly on-chain. The harness labels it rather than quietly counting it as a win.
+See [Accuracy](#accuracy) for exactly what has and hasn't been validated.
 
 ## Why
 
 - **It's Python.** Most Solana DLMM tooling is TypeScript or Rust. If you work in Python —
   quant research, backtests, data pipelines — this fills the gap.
-- **No RPC round-trips.** Decode a pool once, then price as many swaps as you want,
-  in-process. Useful for routing, liquidation math, backtests, and dashboards.
+- **One fetch, then local.** Decode a pool once from raw account bytes, then price as many
+  swaps as you want in-process, with no further RPC round-trips. Useful for routing,
+  liquidation math, backtests, and dashboards.
 - **You can check it.** An independent implementation that matches the on-chain program
-  exactly, limit orders included, with the diff harness to prove it.
+  exactly, with the diff harness committed so you can prove it without a key.
 
 ## Install
 
@@ -52,6 +62,49 @@ print(result.amount_out, result.bins_crossed)
 `quote()` also takes an optional `timestamp` (unix seconds) for the fee's decay reference,
 and defaults to now.
 
+### You must fetch enough BinArrays
+
+`quote()` only knows about the bins you hand it. If a swap is big enough to walk past the last
+BinArray you fetched, the honest answer is "I don't know" — not a smaller number. So it raises:
+
+```python
+from meteora_dlmm import quote, InsufficientBinArrays, array_index_of
+
+try:
+    result = quote(pool, amount_in, swap_for_y=True)
+except InsufficientBinArrays as e:
+    # e.bin_id         - the first bin we couldn't see
+    # e.remaining_in   - input still unfilled
+    # e.partial        - the Quote we got before running out (amount_out is a LOWER BOUND)
+    fetch_more(array_index_of(e.bin_id))   # then re-quote
+```
+
+If you'd rather have the partial than an exception, pass `strict=False` and check the result:
+
+```python
+result = quote(pool, amount_in, swap_for_y=True, strict=False)
+if not result.complete:
+    print(f"lower bound only; {result.remaining_in} unfilled, need bin {result.missing_bin_id}")
+```
+
+If you fetched **every** BinArray the pool has — `getProgramAccounts` does this, and arrays only
+exist where liquidity was placed — then there is no window to run off the end of, and a swap that
+runs short means the pool is genuinely drained. Say so, and `quote()` will stop raising:
+
+```python
+pool = PoolState.from_accounts(lb_pair, all_bin_arrays, 9, 6, exhaustive=True)
+result = quote(pool, huge_amount, swap_for_y=True)
+# result.complete == True and result.remaining_in > 0  ->  pool drained; this fill is exact
+```
+
+Read the two fields together:
+
+| `complete` | `remaining_in` | Meaning |
+|-----------|----------------|---------|
+| `True` | `0` | Full fill. `amount_out` is exact. |
+| `True` | `> 0` | Pool drained. `amount_out` is exact — it's all the pool had. |
+| `False` | `> 0` | We ran out of *data*, not liquidity. `amount_out` is a **lower bound**. Fetch more and re-quote. |
+
 `examples/quote_minimal.py` is the shape to copy into your own code.
 `examples/quote_from_rpc.py` fetches a live pool by address and quotes it.
 
@@ -61,11 +114,12 @@ The `validation/` folder diffs this library against the SDK's `swapQuote`. Every
 its options are documented in [validation/README.md](validation/README.md); here's the short
 version.
 
-The quick way needs no RPC and no key. If a `reference.json` is committed (it holds only
-public on-chain data), just run:
+The quick way needs no RPC and no key. `reference.json` is committed (it holds only public
+on-chain data), so:
 
 ```bash
-python3 validation/check_quote.py
+python3 validation/check_quote.py     # diff vs the SDK's swapQuote
+python3 validation/live_check.py      # score vs real executed swaps
 ```
 
 To capture fresh data from your own pool, you need a Solana RPC key (a free Helius key works
@@ -79,24 +133,50 @@ npx tsx capture_reference.mjs        # writes reference.json
 python3 check_quote.py
 ```
 
-Your key goes in `RPC_URL`.
-Use `npx tsx find_pools.mjs` to list live pools, and pick a small bin step (1–4 bp) so swaps
-cross several bins.
+Your key goes in `RPC_URL`. Raise `COUNT` (BinArrays fetched, default 8) until the largest
+swap reports `full` rather than a percentage — otherwise you're comparing truncated windows.
+Use `npx tsx find_pools.mjs` to list live pools.
 
 ## API
 
-- `PoolState.from_accounts(lb_pair, bin_arrays, decimals_x, decimals_y)` — decode a pool from raw bytes.
-- `quote(pool, amount_in, swap_for_y, timestamp=None) -> Quote(amount_out, bins_crossed)`.
-- `decode_lb_pair(bytes)`, `decode_bin_arrays(bytes_list, bin_step)` — lower-level decoders.
+- `PoolState.from_accounts(lb_pair, bin_arrays, decimals_x, decimals_y, lb_pair_key=None,
+  exhaustive=False)` — decode a pool from raw bytes. Pass `lb_pair_key` (32 bytes) to assert the
+  BinArrays really belong to that pool. Pass `exhaustive=True` if `bin_arrays` is every array the
+  pool has, so a short fill is reported as a drained pool rather than raising.
+- `quote(pool, amount_in, swap_for_y, timestamp=None, support_limit_order=True, strict=True)`
+  → `Quote(amount_out, bins_crossed, complete, remaining_in, missing_bin_id)`.
+  Raises `InsufficientBinArrays` when `strict` and the walk leaves the loaded bin window.
+- `PoolState.is_loaded(bin_id)`, `PoolState.loaded_bin_range()`, `array_index_of(bin_id)`
+  — which bins you actually hold.
+- `decode_lb_pair(bytes)` → `(static, variable, active_id, bin_step, mint_x, mint_y)`;
+  `decode_bin_arrays(bytes_list)` → `(bins, loaded_array_indices)` — lower-level decoders.
+- `DecodeError` on malformed or mismatched accounts.
 
 ## Accuracy
 
-| Venue | Status | Error vs on-chain |
-|-------|--------|-------------------|
-| Meteora DLMM — variable fee + limit orders, both directions | Validated | 0 lamports, 1–495 bins |
+What the committed fixtures let you verify, with no key, right now:
+
+| Check | Pool | Coverage | Result |
+|-------|------|----------|--------|
+| vs SDK `swapQuote` (`check_quote.py`) | 1bp SOL/USDC | X→Y, full fills across 1–20 bins, volatility accumulator nonzero so the fee ramp is live | **0 lamports** |
+| vs real executed swaps (`live_check.py`) | same pool | 10 clean swaps, both directions | **median 0.0001%**, max 0.001% |
+
+What is **not** yet backed by a committed fixture, and shouldn't be taken on trust:
+
+- Other bin steps and other pairs. The math doesn't depend on bin step, so they *should*
+  pass — but "should" isn't "did".
+- The Y→X direction against `swapQuote` (real executed swaps cover both directions; the
+  `swapQuote` fixture is X→Y only).
+- **Limit orders.** The committed pool has limit orders in only 2 of 3264 liquid bins, and the
+  only swap that reaches them is the partial-fill one. The `processed_order` tier is never
+  exercised. The three-tier fill was developed and matched against a 4bp limit-order pool
+  during development, but that capture is not in this repo, so you can't check it here.
+
+Widening this to many pools and bin steps is [M1 on the roadmap](ROADMAP.md), and is the next
+thing being built.
 
 [LIMITATIONS.md](LIMITATIONS.md) covers scope, assumptions, and the bugs I hit getting to an
-exact match. [ROADMAP.md](ROADMAP.md) covers what's next.
+exact match. [CHANGELOG.md](CHANGELOG.md) covers what changed in v0.2.0 (breaking).
 
 ## License
 
