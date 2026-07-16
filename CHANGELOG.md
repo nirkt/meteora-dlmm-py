@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.0
+
+Packaging release — no changes to swap math or the public API; every quote still matches the
+on-chain program to the lamport.
+
+- Published on PyPI: `pip install meteora-dlmm`.
+- `python -m meteora_dlmm.selftest` reproduces the four reference quotes (diff = 0) from an
+  installed copy; the reference fixture is bundled so it works with no repo checkout.
+- Version is single-sourced from package metadata (no more hardcoded `__version__`).
+- Ships `py.typed` (PEP 561) so type checkers see the annotations.
+- Optional `[rpc]` extra for the RPC example; the library itself stays dependency-free.
+
 ## 0.2.0
 
 A correctness release. **Breaking**: two decoder signatures changed, and `quote()` now raises
