@@ -118,8 +118,9 @@ The quick way needs no RPC and no key. `reference.json` is committed (it holds o
 on-chain data), so:
 
 ```bash
-python3 validation/check_quote.py     # diff vs the SDK's swapQuote
-python3 validation/live_check.py      # score vs real executed swaps
+python3 validation/check_quote.py       # diff vs the SDK's swapQuote
+python3 validation/check_token2022.py   # transfer-fee math + refusal of unquotable mints
+python3 validation/live_check.py        # score vs real executed swaps
 ```
 
 To capture fresh data from your own pool, you need a Solana RPC key (a free Helius key works
@@ -143,9 +144,21 @@ Use `npx tsx find_pools.mjs` to list live pools.
   exhaustive=False)` — decode a pool from raw bytes. Pass `lb_pair_key` (32 bytes) to assert the
   BinArrays really belong to that pool. Pass `exhaustive=True` if `bin_arrays` is every array the
   pool has, so a short fill is reported as a drained pool rather than raising.
-- `quote(pool, amount_in, swap_for_y, timestamp=None, support_limit_order=True, strict=True)`
-  → `Quote(amount_out, bins_crossed, complete, remaining_in, missing_bin_id)`.
+- `quote(pool, amount_in, swap_for_y, timestamp=None, support_limit_order=True, strict=True,
+  fee_in=None, fee_out=None)`
+  → `Quote(amount_out, bins_crossed, complete, remaining_in, missing_bin_id,
+  transfer_fee_in, transfer_fee_out, gross_amount_out)`.
   Raises `InsufficientBinArrays` when `strict` and the walk leaves the loaded bin window.
+  `fee_in`/`fee_out` are optional `TransferFee` objects for Token-2022 transfer-fee pools;
+  omit them for standard SPL pools and behavior is unchanged.
+- `quote_with_mints(pool, amount_in, swap_for_y, mint_x_info, mint_y_info, ...)` — convenience
+  wrapper that resolves each side's transfer fee from decoded mint info and calls `quote()`.
+- `parse_mint(mint_bytes, owner)` → `MintInfo(decimals, is_token_2022, transfer_fee,
+  extensions)`. Decodes a mint's Token-2022 extensions. Raises `UnsupportedMint` (with the
+  offending extension id) for transfer hooks and other transfer-altering extensions this
+  library can't model off-chain — an honest refusal instead of a wrong number.
+- `TransferFee(basis_points, max_fee)` with `.fee_on(amount)` — the on-chain `calculate_fee`
+  (ceil, capped at `max_fee`).
 - `PoolState.is_loaded(bin_id)`, `PoolState.loaded_bin_range()`, `array_index_of(bin_id)`
   — which bins you actually hold.
 - `decode_lb_pair(bytes)` → `(static, variable, active_id, bin_step, mint_x, mint_y)`;
@@ -160,6 +173,7 @@ What the committed fixtures let you verify, with no key, right now:
 |-------|------|----------|--------|
 | vs SDK `swapQuote` (`check_quote.py`) | 1bp SOL/USDC | X→Y, full fills across 1–20 bins, volatility accumulator nonzero so the fee ramp is live | **0 lamports** |
 | vs real executed swaps (`live_check.py`) | same pool | 10 clean swaps, both directions | **median 0.0001%**, max 0.001% |
+| Token-2022 fees + refusals (`check_token2022.py`) | reference pool + synthetic mints | transfer-fee math, cap, and every refusal path | **12/12 pass** |
 
 What is **not** yet backed by a committed fixture, and shouldn't be taken on trust:
 
@@ -172,11 +186,16 @@ What is **not** yet backed by a committed fixture, and shouldn't be taken on tru
   exercised. The three-tier fill was developed and matched against a 4bp limit-order pool
   during development, but that capture is not in this repo, so you can't check it here.
 
-Widening this to many pools and bin steps is [M1 on the roadmap](ROADMAP.md), and is the next
-thing being built.
+**Token-2022:** transfer-fee pools are priced exactly (the fee is applied as an outer layer,
+verified by `check_token2022.py`). Pools whose tokens use a transfer *hook* or other
+transfer-altering extension — e.g. MU/USDC — are **refused** with `UnsupportedMint` rather than
+mis-quoted, because a hook's effect can't be computed off-chain. See
+[LIMITATIONS.md](LIMITATIONS.md).
+
+Widening the fixtures to many pools and bin steps is [M1 on the roadmap](ROADMAP.md).
 
 [LIMITATIONS.md](LIMITATIONS.md) covers scope, assumptions, and the bugs I hit getting to an
-exact match. [CHANGELOG.md](CHANGELOG.md) covers what changed in v0.2.0 (breaking).
+exact match. [CHANGELOG.md](CHANGELOG.md) covers the changes in each release (0.4.0 added Token-2022 support).
 
 ## License
 
