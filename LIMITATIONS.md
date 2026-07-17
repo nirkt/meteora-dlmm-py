@@ -14,9 +14,19 @@ on-chain program exactly.
 
 ## Assumptions
 
-- **No Token-2022 transfer fees.** The program strips any token transfer fee before
-  swapping; the library assumes zero, which is true for SOL/USDC and most pairs. A pair with
-  a transfer-fee extension would need that step added.
+- **Token-2022 transfer fees: supported.** Decode each mint with `parse_mint(mint_bytes,
+  owner)` and pass the result to `quote_with_mints(...)` (or pass `TransferFee` objects to
+  `quote(..., fee_in=, fee_out=)` directly). The fee is applied as an outer layer — skimmed
+  from the input before it reaches the pool and from the output after it leaves — matching the
+  on-chain `calculate_fee` (ceil, capped at `maximum_fee`). Standard SPL pools are unaffected;
+  omit the mint info and behavior is exactly as before.
+- **Token-2022 transfer hooks and other transfer-altering extensions: refused, not guessed.**
+  A transfer hook is an arbitrary program run on every transfer; its effect can't be computed
+  off-chain without simulation, which would defeat a local quoter. `parse_mint` raises
+  `UnsupportedMint` (carrying the offending extension id) for transfer hooks, non-transferable
+  mints, confidential-transfer mints, pausable mints, and any unrecognized extension that
+  might alter transfers. Refusing is deliberate: a wrong quote on such a token could cost an
+  integrator real money, so the library declines rather than returns a confident wrong number.
 - **You provide the liquidity, and the library will tell you when you haven't provided
   enough.** `quote()` only walks the BinArrays you pass in. If a swap would walk past the last
   one you fetched, it raises `InsufficientBinArrays` rather than treating the unknown bins as
