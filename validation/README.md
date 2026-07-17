@@ -56,6 +56,30 @@ Needs no RPC or key.
 python3 check_quote.py
 ```
 
+## check_token2022.py
+Regression test for the Token-2022 support added in 0.4.0. Runs entirely offline (no RPC, no
+`.mjs` capture) — it drives the reference pool for the transfer-fee math and builds synthetic
+mints in-memory to exercise the refusal paths. Checks that:
+
+- standard-pool quotes are unchanged (baseline still `79109650`, so the fee wrapper is inert
+  when no fee is passed),
+- a transfer fee is skimmed correctly on input and output, including the per-transfer `maximum_fee` cap,
+- `parse_mint` **refuses** transfer-hook, non-transferable, confidential-transfer, pausable,
+  and unrecognized-extension mints (raising `UnsupportedMint`), while allowing a no-op
+  (zero-program) hook.
+
+```bash
+python3 check_token2022.py
+```
+
+Exits nonzero on any failure, so it doubles as a CI gate. This is the test that proves a pool
+like MU/USDC (whose token carries a transfer hook) is declined rather than mis-quoted.
+
+
+```bash
+RPC_URL="https://mainnet.helius-rpc.com/?api-key=..." python3 test_mu_live.py
+```
+
 ## live_capture.mjs
 Optional forward test. Watches the pool for real executed swaps over a window and, for each
 clean single-swap moment, records the pre-swap state + the executed amounts into
