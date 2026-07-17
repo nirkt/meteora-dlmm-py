@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.0
+
+Token-2022 support — transfer fees priced exactly, transfer-altering extensions refused
+rather than mis-quoted. Swap math for standard pools is unchanged; the reference self-test
+still matches the on-chain program to the lamport.
+
+- **Transfer fees applied.** New `parse_mint(mint_bytes, owner)` decodes a mint's Token-2022
+  extensions; `quote_with_mints(...)` (and `quote(..., fee_in=, fee_out=)`) apply the fee as
+  an outer layer — on the input before the pool and the output after — matching on-chain
+  `calculate_fee` including the per-transfer `maximum_fee` cap. `Quote` now reports
+  `transfer_fee_in`, `transfer_fee_out`, and `gross_amount_out`.
+- **Unquotable mints refused.** `parse_mint` raises `UnsupportedMint` for transfer hooks,
+  non-transferable, confidential-transfer, pausable, and unrecognized extensions — so a pool
+  like MU/USDC (transfer hook) declines instead of returning a wrong number.
+- **New exports:** `quote_with_mints`, `parse_mint`, `MintInfo`, `TransferFee`,
+  `UnsupportedMint`.
+- **New regression:** `validation/check_token2022.py` covers fee math, the cap, and every
+  refusal case.
+
 ## 0.3.0
 
 Packaging release — no changes to swap math or the public API; every quote still matches the
