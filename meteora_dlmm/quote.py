@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from .constants import Q64, MIN_BIN_ID, MAX_BIN_ID
 from .decode import array_index_of
 from .fees import total_fee, update_reference, update_va, excluded_in, included_in, _ceil_div
+from .token2022 import TransferFee
 
 
 class InsufficientBinArrays(Exception):
@@ -23,11 +24,14 @@ class InsufficientBinArrays(Exception):
 
 @dataclass
 class Quote:
-    amount_out: int
+    amount_out: int          # what the user actually RECEIVES (net of output transfer fee)
     bins_crossed: int
     complete: bool = True
     remaining_in: int = 0
     missing_bin_id: int = None
+    transfer_fee_in: int = 0    # skimmed by the input mint's transfer fee, before the pool
+    transfer_fee_out: int = 0   # skimmed by the output mint's transfer fee, after the pool
+    gross_amount_out: int = 0   # pool output before the output transfer fee
 
 
 def _amount_out(price, amount, swap_for_y):
@@ -47,9 +51,21 @@ def _fill(price, amount, reserve, swap_for_y):
     return amount, 0, _amount_out(price, amount, swap_for_y)
 
 
-def quote(pool, amount_in, swap_for_y, timestamp=None, support_limit_order=True, strict=True):
+def quote(pool, amount_in, swap_for_y, timestamp=None, support_limit_order=True, strict=True,
+          fee_in: TransferFee = None, fee_out: TransferFee = None):
+    """Price an exact-in swap.
+
+    fee_in / fee_out apply the input/output token's Token-2022 transfer fee as an OUTER layer:
+    the pool only ever sees post-input-fee tokens, and the user receives post-output-fee
+    tokens. Pass them (from token2022.parse_mint) for transfer-fee pools; leave None for
+    standard SPL pools, where behavior is unchanged.
+    """
     if timestamp is None:
         timestamp = time.time()
+
+    # Input transfer fee: the pool receives amount_in minus what the mint skims on transfer-in.
+    transfer_fee_in = fee_in.fee_on(amount_in) if fee_in else 0
+    pool_amount_in = amount_in - transfer_fee_in
 
     loaded_lo, loaded_hi = pool.loaded_bin_range()
     sp = pool.static_params
@@ -57,7 +73,7 @@ def quote(pool, amount_in, swap_for_y, timestamp=None, support_limit_order=True,
     update_reference(pool.active_id, vp, sp, timestamp)
 
     step = -1 if swap_for_y else 1
-    current, remaining, out_total, crossed = pool.active_id, amount_in, 0, 0
+    current, remaining, out_total, crossed = pool.active_id, pool_amount_in, 0, 0
 
     while remaining > 0:
         if current < MIN_BIN_ID or current > MAX_BIN_ID:
@@ -108,7 +124,35 @@ def quote(pool, amount_in, swap_for_y, timestamp=None, support_limit_order=True,
             crossed += 1
             current += step
         else:
-            return Quote(amount_out=out_total, bins_crossed=crossed + 1)
+            fee_o = fee_out.fee_on(out_total) if fee_out else 0
+            return Quote(amount_out=out_total - fee_o, bins_crossed=crossed + 1,
+                         transfer_fee_in=transfer_fee_in, transfer_fee_out=fee_o,
+                         gross_amount_out=out_total)
 
-    return Quote(amount_out=out_total, bins_crossed=crossed + 1,
-                 complete=True, remaining_in=remaining)
+    fee_o = fee_out.fee_on(out_total) if fee_out else 0
+    return Quote(amount_out=out_total - fee_o, bins_crossed=crossed + 1,
+                 complete=True, remaining_in=remaining,
+                 transfer_fee_in=transfer_fee_in, transfer_fee_out=fee_o,
+                 gross_amount_out=out_total)
+
+
+def quote_with_mints(pool, amount_in, swap_for_y, mint_x_info, mint_y_info,
+                     timestamp=None, support_limit_order=True, strict=True):
+    """Quote a swap given decoded mint info for both tokens.
+
+    Resolves which mint is input vs output from swap_for_y (X->Y spends X, receives Y), pulls
+    each side's transfer fee, and calls quote() with them. Raises UnsupportedMint upstream if
+    either mint carries an extension we can't model — so a transfer-hook pool refuses here
+    rather than returning a wrong number.
+
+    mint_x_info / mint_y_info come from token2022.parse_mint(mint_bytes, owner).
+    """
+    if swap_for_y:
+        fee_in = mint_x_info.transfer_fee
+        fee_out = mint_y_info.transfer_fee
+    else:
+        fee_in = mint_y_info.transfer_fee
+        fee_out = mint_x_info.transfer_fee
+    return quote(pool, amount_in, swap_for_y, timestamp=timestamp,
+                 support_limit_order=support_limit_order, strict=strict,
+                 fee_in=fee_in, fee_out=fee_out)
